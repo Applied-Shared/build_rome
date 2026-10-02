@@ -1,0 +1,26 @@
+import importlib
+
+__attributes = {
+    "ChunkCellSSLatent": "chunk_cell_ss_latent",
+    "ChunkCellSLat": "chunk_cell_slat",
+}
+
+__submodules = []
+
+__all__ = list(__attributes.keys()) + __submodules
+
+
+def __getattr__(name):
+    if name not in globals():
+        if name in __attributes:
+            module_name = __attributes[name]
+            module = importlib.import_module(f".{module_name}", __name__)
+            globals()[name] = getattr(module, name)
+        elif name in __submodules:
+            module = importlib.import_module(f".{name}", __name__)
+            globals()[name] = module
+        else:
+            raise AttributeError(f"module {__name__} has no attribute {name}")
+    return globals()[name]
+
+

@@ -1,0 +1,125 @@
+# SS flow fine-tuning: TRELLIS.2 ss_flow (1.3B) + LoRA r32 + depth-lift and
+# signed-clearance branches.
+#   torchrun --nproc_per_node 8 train_lightning.py --config configs/ss.yaml data_root=/path/to/data
+data_root: data
+
+models:
+  denoiser:
+    name: LiftedSSFlowModel
+    args:
+      resolution: 16
+      in_channels: 8
+      out_channels: 8
+      model_channels: 1536
+      cond_channels: 1024
+      num_blocks: 30
+      num_heads: 12
+      mlp_ratio: 5.3334
+      pe_mode: rope
+      share_mod: true
+      initialization: scaled
+      qk_rms_norm: true
+      qk_rms_norm_cross: true
+      dtype: bfloat16
+      depth_lift_tau_m: 0.28       # surface tolerance of the depth-tested lift
+    lora:
+      r: 32
+      alpha: 64
+    projection: null
+
+dataset:
+  name: ChunkCellSSLatent
+  args:
+    image_size: 512
+    lift_image_size: 1024          # cond_hi / lift tensors (depth packs are resized to it)
+    depth_pack_suffix: "_gt.npz"   # rendered depth + exact camera of each view
+    pretrained_ss_dec: microsoft/TRELLIS-image-large/ckpts/ss_dec_conv3d_16l8_fp16
+    empty_latent_path: ss_empty_latent.npz
+
+trainer:
+  name: CameraConditionedFlowMatchingCFGTrainer
+  args:
+    batch_size_per_gpu: 4
+    optimizer:
+      name: AdamW
+      args:
+        lr:
+          lora: 3.0e-5
+          new: 1.0e-4
+          embed: 1.0e-4            # conditioning branches (no weight decay)
+        weight_decay:
+          lora: 0.0
+          new_weights: 0.01
+        betas: [0.9, 0.95]
+        eps: 1.0e-8
+    lr_scheduler:
+      name: LinearWarmupLRScheduler
+      args:
+        warmup_steps: 500
+    p_uncond: 0.1                  # CFG dropout on the image (window positions are never dropped)
+    t_schedule:
+      name: logitNormal
+      args:
+        mean: 1.0
+        std: 1.0
+    sigma_min: 1.0e-5
+    finetune_ckpt:
+      denoiser: microsoft/TRELLIS.2-4B/ckpts/ss_flow_img_dit_1_3B_64_bf16
+    image_cond_model:
+      name: DinoV3FeatureExtractor
+      args:
+        model_name: facebook/dinov3-vitl16-pretrain-lvd1689m
+        image_size: 512
+
+lightning:
+  output_dir: results/train_ss
+  max_steps: 200000
+  val_check_interval: 1000
+  limit_val_batches: 16
+  accumulate_grad_batches: 1
+  precision: bf16-mixed
+  num_workers: 8
+  log_every_n_steps: 1
+  init_from_pretrained: true
+  wandb:
+    enable: false
+    project: image-to-scene
+    mode: online
+  validation_render:
+    enable: true
+    num_frames: 120
+    resolution: 1024
+    r: 1.5
+    fov: 60.0
+    cutaway_z_m: 999.0
+    near_clip_frac: 0.15
+    base_elevation_deg: 35.0
+    elevation_amp_deg: 15.0
+    elevation_cycles: 1.0
+    sample_steps: 50
+    guidance_strength: 3.0
+    max_scenes: 4
+    video_format: mp4
+    fps: 30
+
+# Each root holds <base>/scenes/<scene>/view_<vvv>/{images,chunks}; the split
+# file lists the validation scenes ({"val_scenes": [...]}).
+data:
+  train:
+    INDOOR:
+      base: ${data_root}/indoor
+      split_file: ${data_root}/indoor_split.json
+      split: train
+    OUTDOOR:
+      base: ${data_root}/outdoor
+      split_file: ${data_root}/outdoor_split.json
+      split: train
+  val:
+    INDOOR:
+      base: ${data_root}/indoor
+      split_file: ${data_root}/indoor_split.json
+      split: val
+    OUTDOOR:
+      base: ${data_root}/outdoor
+      split_file: ${data_root}/outdoor_split.json
+      split: val
